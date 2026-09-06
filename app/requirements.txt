@@ -1,0 +1,4 @@
+# Flask: framework web que sirve el juego
+Flask>=3.1,<4
+# Gunicorn: servidor WSGI de produccion para correr la app en el contenedor (ECS)
+gunicorn>=23,<24

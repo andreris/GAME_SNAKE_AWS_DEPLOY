@@ -1,0 +1,204 @@
+# =============================================================================
+# CI/CD de Terraform con GitHub Actions
+# -----------------------------------------------------------------------------
+# Objetivo:
+#   - En Pull Requests -> validar (fmt + init + validate + plan) sin tocar AWS.
+#   - En push a master  -> desplegar (apply) la infraestructura a nuestra region.
+#   - Manual            -> permitir ejecutar plan/apply bajo demanda.
+#
+# Referencias usadas:
+#   - Triggers de workflows: docs.github.com/actions ("on", pull_request, push,
+#     workflow_dispatch).
+#   - hashicorp/setup-terraform: instala la CLI y un wrapper que expone stdout.
+#   - aws-actions/configure-aws-credentials: configura las credenciales de AWS.
+#   - Tutorial "Automate Terraform with GitHub Actions" de HashiCorp.
+# =============================================================================
+
+name: Terraform CI/CD
+
+# -----------------------------------------------------------------------------
+# Cuando se ejecuta el workflow (on):
+#   - pull_request hacia main: corre el job de PLAN (revision, no aplica nada).
+#   - push a master: corre el job de APPLY (despliega de verdad).
+#   - paths: solo nos interesa disparar cuando cambia la infraestructura o el
+#     propio workflow, para no gastar minutos en cambios de la app.
+#   - workflow_dispatch: permite lanzarlo a mano desde la pestana Actions,
+#     eligiendo si queremos "plan" o "apply".
+# -----------------------------------------------------------------------------
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [master]
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Accion de Terraform a ejecutar"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+
+# -----------------------------------------------------------------------------
+# Variables de entorno compartidas por todos los jobs.
+#   - AWS_REGION: region destino (debe coincidir con la del backend S3 y el
+#     provider de AWS).
+#   - TF_WORKING_DIR: carpeta donde vive la composicion de prod.
+#   - TF_VERSION: fijamos la version de Terraform para builds reproducibles.
+# -----------------------------------------------------------------------------
+env:
+  AWS_REGION: us-east-1
+  TF_WORKING_DIR: infra/prod
+  # use_lockfile (bloqueo nativo de state en S3) requiere Terraform >= 1.10.
+  TF_VERSION: "1.10.5"
+
+# -----------------------------------------------------------------------------
+# Permisos minimos del GITHUB_TOKEN (principio de menor privilegio):
+#   - contents: read   -> hacer checkout del codigo.
+#   - pull-requests: write -> publicar el resultado del plan como comentario.
+#   - id-token: write  -> necesario SOLO si usas autenticacion OIDC con AWS
+#     (recomendado). Si usas access keys puedes quitarlo.
+# -----------------------------------------------------------------------------
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+# Evita ejecuciones concurrentes sobre la misma rama (no pisar un apply en curso).
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # JOB 1: PLAN
+  # Se ejecuta en Pull Requests y cuando se dispara manualmente con action=plan.
+  # No modifica infraestructura: solo valida y muestra el plan.
+  # ===========================================================================
+  plan:
+    name: Validate & Plan
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.action == 'plan')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Todos los comandos 'run' se ejecutan dentro de la carpeta de prod.
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    steps:
+      # 1) Descarga el codigo del repositorio en el runner.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2) Configura credenciales de AWS. Terraform las usa para leer el backend
+      #    S3 y para el provider. Aqui usamos OIDC (rol IAM) -> sin secretos de
+      #    larga duracion. Crea el secret AWS_ROLE_ARN con el ARN del rol.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # Alternativa con access keys (menos segura). Si la prefieres,
+          # comenta el "role-to-assume" de arriba y descomenta estas lineas:
+          # aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          # aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # 3) Instala la CLI de Terraform en la version fijada.
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # 4) Comprueba el formato del codigo (falla si algo no esta formateado).
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      # 5) Inicializa Terraform (descarga providers y configura el backend S3).
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      # 6) Validacion estatica de la configuracion.
+      - name: Terraform Validate
+        run: terraform validate -no-color
+
+      # 7) Genera el plan. -input=false evita prompts; -no-color para logs limpios.
+      #    continue-on-error nos deja publicar el resultado aunque el plan falle.
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -input=false -no-color
+        continue-on-error: true
+
+      # 8) Publica un resumen del plan como comentario en el Pull Request.
+      - name: Comment Plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Plan 📖 \`${{ steps.plan.outcome }}\`
+
+            <details><summary>Ver plan</summary>
+
+            \`\`\`
+            ${process.env.PLAN}
+            \`\`\`
+
+            </details>
+
+            *Autor: @${{ github.actor }} · Workflow: \`${{ github.workflow }}\`*`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      # 9) Si el plan fallo, marcamos el job como fallido (despues de comentar).
+      - name: Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  # ===========================================================================
+  # JOB 2: APPLY
+  # Se ejecuta al hacer push/merge a main, o manualmente con action=apply.
+  # Aqui SI se modifica la infraestructura en AWS.
+  # ===========================================================================
+  apply:
+    name: Apply
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.action == 'apply')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          # aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      # -auto-approve porque en CI no hay nadie para confirmar interactivamente.
+      # La proteccion la da el "environment: production" (aprobacion manual).
+      - name: Terraform Apply
+        run: terraform apply -input=false -auto-approve -no-color

@@ -1,0 +1,9 @@
+https://flask.palletsprojects.com/en/stable/installation/
+https://flask.palletsprojects.com/en/stable/installation/#python-version
+https://flask.palletsprojects.com/en/stable/installation/#virtual-environments
+https://flask.palletsprojects.com/en/stable/quickstart/#a-minimal-application
+https://flask.palletsprojects.com/en/stable/quickstart/#html-escaping
+https://flask.palletsprojects.com/en/stable/quickstart/#static-files
+https://flask.palletsprojects.com/en/stable/quickstart/#rendering-templates
+https://flask.palletsprojects.com/en/stable/quickstart/#redirects-and-errorshttps://flask.palletsprojects.com/en/stable/tutorial/factory/
+https://flask.palletsprojects.com/en/stable/views/#basic-reusable-view

@@ -1,0 +1,31 @@
+# =============================================================================
+# .gitignore - Terraform
+# =============================================================================
+
+# Directorio de trabajo local de Terraform (providers, plugins, modulos).
+# Es regenerable con `terraform init`, NO debe versionarse. Aqui es donde
+# estaba el binario de 685 MB que GitHub rechazo.
+**/.terraform/*
+**/.terraform.tfstate.lock.info
+
+# Archivos de estado: pueden contener datos sensibles y los gestiona el
+# backend remoto (S3). No deben ir al repo.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Planes guardados (pueden contener valores sensibles).
+*.tfplan
+tfplan
+
+# Variables locales que suelen tener secretos.
+*.auto.tfvars
+# Si quieres versionar tu tfvars de ejemplo, renombralo a terraform.tfvars.example
+# y eliminalo de la regla con: !terraform.tfvars.example
+
+# Archivos de crash de Terraform.
+crash.log
+crash.*.log
+
+# NOTA: SI versionamos el lock de providers para builds reproducibles.
+!.terraform.lock.hcl

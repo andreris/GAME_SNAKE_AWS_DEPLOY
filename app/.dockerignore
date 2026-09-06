@@ -1,0 +1,13 @@
+# Evita enviar archivos innecesarios al contexto de build (imagen mas liviana)
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+.git
+.gitignore
+Dockerfile
+.dockerignore
+README.md

@@ -1,0 +1,107 @@
+# =============================================================================
+# CD de la Aplicacion (Docker -> ECR -> ECS)
+# -----------------------------------------------------------------------------
+# Objetivo:
+#   1. Construir la imagen Docker del juego.
+#   2. Subirla a nuestro repositorio ECR (tag :latest + tag del commit SHA).
+#   3. Forzar a ECS a desplegar la version recien subida.
+#
+# Por que un workflow SEPARADO de Terraform:
+#   - La app y la infraestructura tienen ciclos de vida distintos. Cambiar el
+#     codigo del juego no deberia re-ejecutar Terraform, y viceversa.
+#   - Permisos y triggers mas acotados (menor superficie, mas claro).
+#
+# Estrategia de imagen (sin generar drift con Terraform):
+#   - La task definition de ECS (gestionada por Terraform) apunta a ":latest".
+#   - Aqui empujamos ":latest" (lo que ECS espera) y ademas un tag con el SHA
+#     del commit para trazabilidad y posibles rollbacks manuales.
+#   - "update-service --force-new-deployment" hace que ECS vuelva a descargar
+#     ":latest" y reemplace las tareas con la imagen nueva.
+#
+# Referencias:
+#   - aws-actions/configure-aws-credentials (OIDC, sin secretos de larga duracion).
+#   - aws-actions/amazon-ecr-login (login de Docker contra ECR).
+# =============================================================================
+
+name: Deploy App to ECS
+
+# -----------------------------------------------------------------------------
+# Se dispara cuando cambia la aplicacion (carpeta app/) o este workflow.
+# Tambien manualmente desde la pestana Actions (workflow_dispatch).
+# -----------------------------------------------------------------------------
+on:
+  push:
+    branches: [master]
+    paths:
+      - "app/**"
+      - ".github/workflows/docker-deploy.yml"
+  workflow_dispatch:
+
+# Variables compartidas. Deben coincidir con los nombres creados por Terraform.
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: viborita-prod # = name_prefix (project-environment)
+  ECS_CLUSTER: viborita-prod-cluster
+  ECS_SERVICE: viborita-prod-service
+
+# OIDC: id-token write para pedir el JWT; contents read para el checkout.
+permissions:
+  contents: read
+  id-token: write
+
+# No solapar despliegues de la app sobre la misma rama.
+concurrency:
+  group: deploy-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    name: Build, Push & Deploy
+    runs-on: ubuntu-latest
+    steps:
+      # 1) Descarga el codigo (incluye el Dockerfile en app/).
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2) Credenciales de AWS via OIDC (mismo rol que usa Terraform).
+      #    El rol necesita permisos de ECR (push) y ecs:UpdateService.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 3) Login de Docker contra ECR. Expone el registry como output.
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 4) Build de la imagen y push con dos tags:
+      #    - latest: lo que la task definition de ECS referencia.
+      #    - <sha>:  identifica de forma unica este commit (trazabilidad/rollback).
+      - name: Build, tag and push image to ECR
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t "$REGISTRY/$ECR_REPOSITORY:latest" -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" ./app
+          docker push "$REGISTRY/$ECR_REPOSITORY:latest"
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      # 5) Fuerza un nuevo despliegue: ECS vuelve a descargar :latest y reemplaza
+      #    las tareas con un rolling update (sin downtime gracias al ALB).
+      - name: Force new ECS deployment
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --force-new-deployment \
+            --no-cli-pager
+
+      # 6) Espera a que el servicio quede estable (todas las tareas nuevas sanas).
+      #    Si el despliegue falla, el job falla -> visibilidad inmediata.
+      - name: Wait for service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE"

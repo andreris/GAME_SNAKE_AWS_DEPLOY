@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}Viborita | Snake{% endblock title %}
+
+{% block content %}
+<main class="app-shell">
+  <section class="game-stage" aria-label="Juego Viborita">
+    <div class="board-panel">
+      <div class="board-wrap">
+        <canvas id="game-board" width="660" height="660" aria-label="Tablero de Viborita"></canvas>
+        <div class="game-overlay" id="game-overlay">
+          <p class="overlay-kicker" id="overlay-kicker">Listo</p>
+          <h1 id="overlay-title">Viborita</h1>
+          <p id="overlay-copy">Come ratones, esquiva arbustos y huye del aguila.</p>
+          <button class="primary-action" id="overlay-action" type="button">Jugar</button>
+        </div>
+      </div>
+    </div>
+
+    <aside class="hud-panel" aria-label="Panel del juego">
+      <header class="game-header">
+        <p>Snake</p>
+        <h2>Viborita</h2>
+      </header>
+
+      <div class="score-grid" aria-label="Marcadores">
+        <div class="score-item">
+          <span>Puntaje</span>
+          <strong id="score">0</strong>
+        </div>
+        <div class="score-item">
+          <span>Record</span>
+          <strong id="best-score">0</strong>
+        </div>
+        <div class="score-item">
+          <span>Nivel</span>
+          <strong id="level">1</strong>
+        </div>
+      </div>
+
+      <div class="actions" aria-label="Acciones">
+        <button class="primary-action" id="start-button" type="button">Jugar</button>
+        <button class="ghost-action" id="pause-button" type="button" disabled>Pausa</button>
+        <button class="ghost-action" id="reset-button" type="button">Reiniciar</button>
+      </div>
+
+      <div class="status-line" id="status-line" role="status" aria-live="polite">Listo</div>
+
+      <div class="direction-pad" aria-label="Controles tactiles">
+        <button class="pad-button pad-up" type="button" data-direction="up" aria-label="Arriba">^</button>
+        <button class="pad-button pad-left" type="button" data-direction="left" aria-label="Izquierda">&lt;</button>
+        <button class="pad-button pad-right" type="button" data-direction="right" aria-label="Derecha">&gt;</button>
+        <button class="pad-button pad-down" type="button" data-direction="down" aria-label="Abajo">v</button>
+      </div>
+    </aside>
+  </section>
+</main>
+{% endblock content %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='game.js') }}" defer></script>
+{% endblock scripts %}
